@@ -7,6 +7,8 @@ var NR = globalThis.NR = globalThis.NR || {};
   const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V'];
 
   const rnd = (a, b) => a + Math.random() * (b - a);
+  // Радиус головы относительно хитбокса врага
+  const HEAD = { chaser: 1.3, mini: 1.45, shooter: 1.3, splitter: 1.15, tank: 1.05, boss: 0.85 };
 
   class Renderer {
     constructor(canvas) {
@@ -20,6 +22,9 @@ var NR = globalThis.NR = globalThis.NR || {};
 
     reset() {
       if (this.parts) this.parts.clear();
+      this.gait = new Map(); // id врага → { ph: фаза шага, ang: куда повёрнуто тело }
+      this.gaitT = null;
+      this.gaitFrame = 0;
       this.floats = [];
       this.banner = null;
       this.shake = 0;
@@ -132,6 +137,9 @@ var NR = globalThis.NR = globalThis.NR || {};
           if (ev.type === 'tank') this.hitstop = Math.max(this.hitstop, 0.04);
           break;
         }
+        case 'eshoot':
+          this.burst(x, y + 6, C.ebullet, 6, 140, 0.3, 2.5);
+          break;
         case 'spawn':
           this.ring(x, y, C[ev.type] || '#fff', 40, 0.3);
           break;
@@ -182,11 +190,11 @@ var NR = globalThis.NR = globalThis.NR || {};
           this.ring(x, y, '#ffffff', 120, 0.5);
           break;
         case 'boss':
-          this.setBanner('СТРАЖ РАЗЛОМА', 'финальная битва', C.boss, 3);
+          this.setBanner('КОРОЛЬ-ГРИЗЛИ', 'финальная битва', C.boss, 3);
           this.shake = 12;
           break;
         case 'bossphase':
-          this.setBanner('ФАЗА ' + ev.n, ev.n === 2 ? 'он зовёт подмогу' : 'берегись тарана', C.boss, 1.8);
+          this.setBanner('ФАЗА ' + ev.n, ev.n === 2 ? 'зовёт медведей на подмогу' : 'берегись тарана', C.boss, 1.8);
           this.whiteFlash = 0.5; this.shake = 16; this.hitstop = 0.15;
           this.ring(x, y, C.boss, 400, 0.6);
           break;
@@ -367,7 +375,14 @@ var NR = globalThis.NR = globalThis.NR || {};
       }
 
       // Враги
+      this.live = !ui.paused && g.state === 'play';
+      this.gaitDt = this.live && this.gaitT !== null ? Math.min(0.1, this.time - this.gaitT) : 0;
+      this.gaitT = this.time;
+      this.gaitFrame++;
       for (const e of g.enemies) this.drawEnemy(e, p);
+      if (this.gaitFrame % 60 === 0) { // забываем погибших
+        for (const [id, st] of this.gait) if (this.gaitFrame - st.seen > 30) this.gait.delete(id);
+      }
       this.noGlow();
 
       // Пули (аддитивно, без shadowBlur — дешевле)
@@ -382,11 +397,16 @@ var NR = globalThis.NR = globalThis.NR || {};
       for (const b of g.pb.items) { c.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); c.lineTo(b.x, b.y); }
       c.stroke();
 
-      c.fillStyle = 'rgba(255,60,140,0.35)';
+      // Плевки: салатовая капля с хвостом
+      c.strokeStyle = 'rgba(190,255,60,0.6)'; c.lineWidth = 7;
       c.beginPath();
-      for (const b of g.eb.items) { c.moveTo(b.x + b.r * 2.2, b.y); c.arc(b.x, b.y, b.r * 2.2, 0, TAU); }
+      for (const b of g.eb.items) { c.moveTo(b.x - b.vx * 0.06, b.y - b.vy * 0.06); c.lineTo(b.x, b.y); }
+      c.stroke();
+      c.fillStyle = 'rgba(190,255,60,0.55)';
+      c.beginPath();
+      for (const b of g.eb.items) { c.moveTo(b.x + b.r * 2, b.y); c.arc(b.x, b.y, b.r * 2, 0, TAU); }
       c.fill();
-      c.fillStyle = '#ffd0e6';
+      c.fillStyle = '#f2ffcc';
       c.beginPath();
       for (const b of g.eb.items) { c.moveTo(b.x + b.r, b.y); c.arc(b.x, b.y, b.r, 0, TAU); }
       c.fill();
@@ -396,63 +416,231 @@ var NR = globalThis.NR = globalThis.NR || {};
       if (g.state !== 'dead') this.drawPlayer(g, ui);
     }
 
+    // Походка врага: фаза растёт только от реального движения, тело плавно поворачивается.
+    gaitOf(e, look) {
+      const dt = this.gaitDt, sp = Math.hypot(e.vx, e.vy);
+      let st = this.gait.get(e.id);
+      const want = e.type === 'tank' ? e.face : sp > 8 ? Math.atan2(e.vy, e.vx) : Math.atan2(look.y, look.x);
+      if (!st) { st = { ph: e.id * 1.7, ang: want }; this.gait.set(e.id, st); }
+      st.seen = this.gaitFrame;
+      st.ph += sp * dt / (0.9 * e.r);
+      st.ang += NR.angleDiff(st.ang, want) * Math.min(1, dt * 8);
+      return st;
+    }
+
+    // Туловище и лапы медведя, вид сверху. Начало координат — центр головы, +X — куда ползёт.
+    // R — радиус головы, ph — фаза шага. Лапы шагают диагональными парами.
+    bearBody(R, col, ph, o) {
+      const c = this.ctx;
+      o = o || {};
+      const lw = o.lw || 2.5;
+      const reach = o.cub ? 0.3 : 0.42;     // амплитуда шага
+      const legW = (o.cub ? 0.3 : 0.36) * R;
+      const sway = Math.sin(ph * 2) * 0.05 * R;
+      c.save();
+      c.lineCap = 'round';
+      this.noGlow();
+      // Лапы: [x сустава, сторона, сдвиг фазы]
+      const legs = [[-0.45, -1, 0], [-0.45, 1, Math.PI], [-1.75, 1, 0], [-1.75, -1, Math.PI]];
+      for (const [jx, side, off] of legs) {
+        const s = Math.sin(ph + off), lift = Math.max(0, Math.cos(ph + off)); // lift>0 — лапа в переносе
+        const fx = (jx + 0.15 + s * reach) * R;
+        const fy = side * (1.12 + lift * 0.12) * R + sway;
+        const ax = jx * R, ay = side * 0.5 * R + sway;
+        // Конечность: светящийся контур и тёмная начинка
+        c.strokeStyle = col; c.lineWidth = legW + lw * 2;
+        c.beginPath(); c.moveTo(ax, ay); c.lineTo(fx, fy); c.stroke();
+        c.strokeStyle = '#0b0614'; c.lineWidth = legW;
+        c.stroke();
+        c.strokeStyle = col + '30'; c.stroke();
+        // Ступня с когтями
+        const pr = (o.cub ? 0.2 : 0.24) * R * (1 + lift * 0.15);
+        c.fillStyle = '#0b0614'; c.strokeStyle = col; c.lineWidth = lw * 0.8;
+        c.beginPath(); c.ellipse(fx + 0.04 * R, fy, pr * 1.15, pr, 0, 0, TAU); c.fill(); c.stroke();
+        if (!o.cub) {
+          c.lineWidth = Math.max(1, R * 0.06);
+          c.strokeStyle = '#f4f0ff';
+          c.beginPath();
+          for (let k = -1; k <= 1; k++) {
+            const cy = fy + k * pr * 0.55;
+            c.moveTo(fx + pr * 1.05, cy); c.lineTo(fx + pr * 1.05 + 0.16 * R, cy + k * 0.04 * R);
+          }
+          c.stroke();
+        }
+      }
+      // Хвостик
+      c.fillStyle = '#0b0614'; c.strokeStyle = col; c.lineWidth = lw * 0.8;
+      c.beginPath(); c.arc(-2.3 * R, sway, 0.16 * R, 0, TAU); c.fill(); c.stroke();
+      // Туловище
+      this.glow(col, 12);
+      c.lineWidth = lw; c.strokeStyle = col;
+      c.fillStyle = '#0b0614';
+      c.beginPath(); c.ellipse(-1.1 * R, sway, 1.2 * R, 0.82 * R, 0, 0, TAU); c.fill();
+      c.fillStyle = col + '22'; c.fill(); c.stroke();
+      this.noGlow();
+      // Загривок и хребет
+      c.lineWidth = 1.5; c.strokeStyle = col + '88';
+      c.beginPath(); c.ellipse(-0.55 * R, sway, 0.38 * R, 0.6 * R, 0, Math.PI * 0.6, Math.PI * 1.4); c.stroke();
+      c.beginPath(); c.moveTo(-0.7 * R, sway); c.quadraticCurveTo(-1.3 * R, sway + Math.sin(ph) * 0.12 * R, -2.0 * R, sway); c.stroke();
+      if (o.armor) { // наплечники танка
+        c.strokeStyle = C.shield; c.lineWidth = 3.5;
+        for (const sd of [-1, 1]) {
+          c.beginPath(); c.arc(-0.55 * R, sd * 0.45 * R + sway, 0.4 * R, sd > 0 ? 0.2 : Math.PI + 0.2, sd > 0 ? Math.PI - 0.2 : TAU - 0.2); c.stroke();
+        }
+      }
+      c.restore();
+    }
+
+    // Морда бешеного медведя анфас. R — радиус головы, o.mouth 0..1 — насколько раскрыта пасть.
+    bear(R, col, o) {
+      const c = this.ctx, t = this.time;
+      o = o || {};
+      const mouth = o.mouth || 0, look = o.look || { x: 0, y: 1 };
+      c.lineWidth = o.lw || 2.5;
+      c.strokeStyle = col;
+      // Уши (рисуются до головы, голова перекрывает основание)
+      for (const sx of [-1, 1]) {
+        c.fillStyle = '#0b0614';
+        c.beginPath(); c.arc(sx * 0.68 * R, -0.68 * R, 0.32 * R, 0, TAU); c.fill();
+        c.fillStyle = col + '30'; c.fill(); c.stroke();
+      }
+      // Голова
+      c.fillStyle = '#0b0614';
+      c.beginPath(); c.ellipse(0, 0, R * 1.04, R * 0.94, 0, 0, TAU); c.fill();
+      c.fillStyle = col + '26'; c.fill(); c.stroke();
+      this.noGlow();
+
+      c.lineWidth = 1.5;
+      for (const sx of [-1, 1]) {
+        c.beginPath(); c.arc(sx * 0.68 * R, -0.68 * R, 0.15 * R, Math.PI * 0.9, Math.PI * 2.1); c.stroke();
+      }
+      // Морда и нос
+      c.beginPath(); c.ellipse(0, 0.32 * R, 0.5 * R, 0.36 * R, 0, 0, TAU); c.stroke();
+      c.fillStyle = col;
+      c.beginPath(); c.moveTo(-0.14 * R, 0.07 * R); c.lineTo(0.14 * R, 0.07 * R); c.lineTo(0, 0.21 * R); c.closePath(); c.fill();
+
+      // Пасть
+      const mh = 0.04 * R + mouth * 0.24 * R, my = 0.42 * R + mh;
+      c.fillStyle = '#26000c';
+      c.beginPath(); c.ellipse(0, my, 0.28 * R, mh, 0, 0, TAU); c.fill(); c.stroke();
+      if (mouth > 0.15 && !o.cub) {
+        c.fillStyle = '#ffffff';
+        for (const sx of [-1, 1]) {
+          const tx = sx * 0.13 * R, ty = my - mh * 0.92;
+          c.beginPath(); c.moveTo(tx - 0.05 * R, ty); c.lineTo(tx + 0.05 * R, ty); c.lineTo(tx, ty + Math.min(0.14 * R, mh * 0.9)); c.closePath(); c.fill();
+        }
+      }
+      // Пена в уголках пасти
+      c.fillStyle = 'rgba(240,255,220,0.9)';
+      for (const sx of [-1, 1]) {
+        const b = Math.sin(t * 9 + sx + R) * 0.03 * R;
+        c.beginPath(); c.arc(sx * 0.29 * R, my + b, 0.06 * R, 0, TAU); c.fill();
+        c.beginPath(); c.arc(sx * 0.22 * R, my + mh * 0.7 + b, 0.04 * R, 0, TAU); c.fill();
+      }
+
+      // Глаза: красные, светятся, смотрят на игрока
+      const er = o.cub ? 0.14 * R : 0.11 * R;
+      this.glow('#ff2030', 8);
+      c.fillStyle = '#ff3040';
+      for (const sx of [-1, 1]) { c.beginPath(); c.arc(sx * 0.36 * R, -0.14 * R, er, 0, TAU); c.fill(); }
+      this.noGlow();
+      c.fillStyle = '#ffffff';
+      for (const sx of [-1, 1]) {
+        c.beginPath(); c.arc(sx * 0.36 * R + look.x * er * 0.45, -0.14 * R + look.y * er * 0.45, er * 0.38, 0, TAU); c.fill();
+      }
+      // Злые брови
+      if (!o.cub) {
+        c.lineWidth = Math.max(2, R * 0.09);
+        c.beginPath();
+        for (const sx of [-1, 1]) { c.moveTo(sx * 0.6 * R, -0.42 * R); c.lineTo(sx * 0.14 * R, -0.24 * R); }
+        c.stroke();
+      }
+
+      if (o.tuft) { // чубчик медведицы
+        c.lineWidth = 2;
+        c.beginPath();
+        for (let k = -1; k <= 1; k++) { c.moveTo(k * 0.12 * R, -0.9 * R); c.lineTo(k * 0.22 * R, -1.15 * R); }
+        c.stroke();
+      }
+      if (o.helmet) { // шлем танка
+        c.strokeStyle = C.shield; c.lineWidth = 4;
+        c.beginPath(); c.arc(0, 0.05 * R, R * 1.0, Math.PI * 1.13, Math.PI * 1.87); c.stroke();
+        c.fillStyle = C.shield;
+        for (let k = -1; k <= 1; k++) { c.beginPath(); c.arc(k * 0.42 * R, -0.86 * R + Math.abs(k) * 0.12 * R, 0.06 * R, 0, TAU); c.fill(); }
+      }
+      if (o.crown) { // корона короля-гризли
+        this.glow('#ffd84a', 16);
+        c.strokeStyle = '#ffd84a'; c.fillStyle = 'rgba(255,216,74,0.25)'; c.lineWidth = 3;
+        c.beginPath();
+        c.moveTo(-0.45 * R, -0.78 * R);
+        c.lineTo(-0.5 * R, -1.3 * R); c.lineTo(-0.22 * R, -1.02 * R);
+        c.lineTo(0, -1.42 * R); c.lineTo(0.22 * R, -1.02 * R);
+        c.lineTo(0.5 * R, -1.3 * R); c.lineTo(0.45 * R, -0.78 * R);
+        c.closePath(); c.fill(); c.stroke();
+        this.noGlow();
+      }
+    }
+
     drawEnemy(e, p) {
       const c = this.ctx, t = this.time;
       const col = e.flash > 0 ? '#ffffff' : (e.type === 'boss' ? this.bossColor(e) : C[e.type]);
+      const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1;
+      const look = { x: dx / d, y: dy / d };
+      // Бешеная дрожь: мелкие стремительные — сильнее
+      const jit = e.type === 'chaser' || e.type === 'mini' ? 1.4 : 0.6;
       c.save();
-      c.translate(e.x, e.y);
-      this.glow(col, e.type === 'boss' ? 30 : 14);
-      c.strokeStyle = col;
-      c.fillStyle = col + '26';
-      c.lineWidth = 2.5;
-      const head = Math.atan2(e.vy, e.vx);
+      c.translate(e.x + rnd(-jit, jit), e.y + rnd(-jit, jit));
 
+      if (e.type === 'boss') {
+        this.drawBoss(e, col, look, this.gaitOf(e, look));
+        c.restore();
+        return;
+      }
+      if (e.type === 'tank') { // щит смотрит туда же, куда медведь
+        c.save(); c.rotate(e.face);
+        this.glow(C.shield, 18);
+        c.strokeStyle = C.shield; c.lineWidth = 5;
+        c.beginPath(); c.arc(0, 0, e.r + 9, -0.95, 0.95); c.stroke();
+        c.restore();
+      }
+      // Тело ползёт по ходу движения, голова вынесена вперёд и смотрит на игрока
+      const HR = e.r * HEAD[e.type] * 0.9;
+      const st = this.gaitOf(e, look);
+      const hx = Math.cos(st.ang) * 0.5 * HR, hy = Math.sin(st.ang) * 0.5 * HR;
+      c.translate(hx, hy);
+      c.save(); c.rotate(st.ang);
+      this.bearBody(HR, col, st.ph, { cub: e.type === 'mini', armor: e.type === 'tank' });
+      c.restore();
+      c.rotate(NR.clamp(e.vx / 450, -0.3, 0.3));
+      this.glow(col, 14);
+      const chomp = 0.5 + 0.5 * Math.sin(t * 16 + e.id * 1.7);
+      let mouthY = 0.55;
       switch (e.type) {
-        case 'chaser':
-        case 'mini': {
-          c.rotate(head);
-          const r = e.r * 1.25;
-          c.beginPath(); c.moveTo(r, 0); c.lineTo(-r * 0.8, r * 0.75); c.lineTo(-r * 0.4, 0); c.lineTo(-r * 0.8, -r * 0.75); c.closePath();
-          c.fill(); c.stroke();
-          break;
-        }
+        case 'chaser': this.bear(HR, col, { mouth: chomp * 0.8, look }); break;
+        case 'mini': this.bear(HR, col, { mouth: chomp * 0.6, look, cub: true }); break;
         case 'shooter': {
-          this.poly(4, e.r * 1.2, t * 1.5 + e.id); c.fill(); c.stroke();
-          this.poly(4, e.r * 0.55, -t * 2); c.stroke();
-          if (e.fireT < 0.4) {
-            c.fillStyle = '#ffffff';
-            c.beginPath(); c.arc(0, 0, 3 + (0.4 - e.fireT) * 18, 0, TAU); c.fill();
-          }
+          const wind = e.fireT < 0.45 ? 1 - e.fireT / 0.45 : 0; // пасть раскрывается перед плевком
+          this.bear(HR, col, { mouth: 0.15 + wind * 0.85, look });
           break;
         }
-        case 'splitter': {
-          this.poly(6, e.r * 1.1, t * 2 + e.id); c.fill(); c.stroke();
-          this.poly(6, e.r * 0.5, -t * 3); c.stroke();
-          break;
-        }
-        case 'tank': {
-          c.rotate(e.face);
-          this.poly(8, e.r, Math.PI / 8); c.fill(); c.stroke();
-          this.poly(8, e.r * 0.55, Math.PI / 8 + t); c.stroke();
-          this.glow(C.shield, 18);
-          c.strokeStyle = C.shield; c.lineWidth = 5;
-          c.beginPath(); c.arc(0, 0, e.r + 8, -0.95, 0.95); c.stroke();
-          break;
-        }
-        case 'boss':
-          this.drawBoss(e, col);
-          break;
+        case 'splitter': this.bear(HR, col, { mouth: chomp * 0.5, look, tuft: true }); break;
+        case 'tank': this.bear(HR, col, { mouth: 0.3, look, helmet: true }); mouthY = 0.5; break;
       }
       c.restore();
+      this.noGlow();
+
+      // Пена капает с морды
+      if (this.live && Math.random() < 0.03) {
+        this.part(e.x + hx + rnd(-4, 4), e.y + hy + e.r * mouthY + 4, rnd(-10, 10), rnd(30, 70), 0.5, '#e8ffd0', 2, 'dot');
+      }
 
       // Полоска здоровья у крепких врагов
       if ((e.type === 'tank' || e.type === 'splitter') && e.hp < e.maxHp) {
-        this.noGlow();
         const w = e.r * 2;
         c.fillStyle = 'rgba(255,255,255,0.15)';
-        c.fillRect(e.x - w / 2, e.y + e.r + 10, w, 3);
+        c.fillRect(e.x - w / 2, e.y + e.r + 12, w, 3);
         c.fillStyle = C[e.type];
-        c.fillRect(e.x - w / 2, e.y + e.r + 10, w * Math.max(0, e.hp / e.maxHp), 3);
+        c.fillRect(e.x - w / 2, e.y + e.r + 12, w * Math.max(0, e.hp / e.maxHp), 3);
       }
     }
 
@@ -460,25 +648,29 @@ var NR = globalThis.NR = globalThis.NR || {};
       return e.phase === 3 ? '#ff2299' : e.phase === 2 ? '#ff6633' : C.boss;
     }
 
-    drawBoss(e, col) {
+    drawBoss(e, col, look, st) {
       const c = this.ctx, t = this.time;
       if (e.intro > 0) c.globalAlpha = 1 - e.intro / 2.2 * 0.7;
-      const pulse = 1 + Math.sin(t * (e.phase === 3 ? 12 : 5)) * 0.06;
-      // Внешняя звезда
-      c.lineWidth = 3;
+      const HR = e.r * HEAD.boss;
+      c.translate(Math.cos(st.ang) * 0.5 * HR, Math.sin(st.ang) * 0.5 * HR);
+      c.save(); c.rotate(st.ang);
+      this.bearBody(HR, col, st.ph, { lw: 3 });
+      c.restore();
+      // Грива — вращающаяся звезда из клочьев шерсти вокруг головы
+      this.glow(col, 28);
+      c.strokeStyle = col; c.fillStyle = col + '22'; c.lineWidth = 3;
       c.beginPath();
-      const n = 8, rot = t * 0.6;
+      const n = 12, rot = t * (e.phase === 3 ? 1.2 : 0.4);
       for (let i = 0; i < n * 2; i++) {
-        const r = i % 2 ? e.r * 0.8 : e.r * 1.25;
+        const r = i % 2 ? e.r * 0.85 : e.r * 1.12;
         const a = rot + (i / (n * 2)) * TAU;
         if (i === 0) c.moveTo(Math.cos(a) * r, Math.sin(a) * r); else c.lineTo(Math.cos(a) * r, Math.sin(a) * r);
       }
       c.closePath(); c.fill(); c.stroke();
-      this.poly(6, e.r * 0.65, -t * 1.2); c.stroke();
-      // Ядро
-      c.fillStyle = '#ffffff';
-      this.glow(col, 40);
-      c.beginPath(); c.arc(0, 0, e.r * 0.25 * pulse, 0, TAU); c.fill();
+      // Голова
+      const mouth = e.mode === 'tele' ? 1 : e.mode === 'charge' ? 0.9 : 0.4 + 0.25 * Math.sin(t * 6);
+      this.glow(col, 24);
+      this.bear(HR, col, { mouth, look, crown: true, lw: 3 });
       c.globalAlpha = 1;
     }
 
@@ -595,7 +787,7 @@ var NR = globalThis.NR = globalThis.NR || {};
       // Центр: волна или босс
       if (g.boss) {
         const e = g.boss, w = 560, x = W / 2 - w / 2;
-        this.text('СТРАЖ РАЗЛОМА', W / 2, 24, 16, C.boss, 'center', 10);
+        this.text('КОРОЛЬ-ГРИЗЛИ', W / 2, 24, 16, C.boss, 'center', 10);
         c.fillStyle = 'rgba(255,255,255,0.1)'; c.fillRect(x, 40, w, 10);
         this.glow(C.boss, 12);
         c.fillStyle = this.bossColor(e); c.fillRect(x, 40, w * Math.max(0, e.hp / e.maxHp), 10);
@@ -707,8 +899,8 @@ var NR = globalThis.NR = globalThis.NR || {};
       c.fillStyle = 'rgba(5,2,15,0.78)';
       c.fillRect(0, 0, W, H);
       const col = win ? '#66ffcc' : '#ff3366';
-      this.text(win ? 'РАЗЛОМ ЗАКРЫТ' : 'СИГНАЛ ПОТЕРЯН', W / 2, H / 2 - 120, 60, col, 'center', 26, 800);
-      this.text(win ? 'Страж повержен. Победа!' : `Вы продержались до волны ${g.wave > NR.WAVES.length ? 'с боссом' : g.wave}`, W / 2, H / 2 - 66, 18, 'rgba(255,255,255,0.8)', 'center', 0, 500);
+      this.text(win ? 'РАЗЛОМ ЗАКРЫТ' : 'ВАС ЗАГРЫЗЛИ', W / 2, H / 2 - 120, 60, col, 'center', 26, 800);
+      this.text(win ? 'Король-гризли повержен. Победа!' : `Вы продержались до волны ${g.wave > NR.WAVES.length ? 'с боссом' : g.wave}`, W / 2, H / 2 - 66, 18, 'rgba(255,255,255,0.8)', 'center', 0, 500);
       const rows = [
         ['Время', fmtTime(g.time)],
         ['Убито врагов', String(g.kills)],
@@ -732,16 +924,18 @@ var NR = globalThis.NR = globalThis.NR || {};
     drawMenu(ui) {
       const c = this.ctx, t = this.time;
       // Декоративные фигуры
-      const shapes = [['chaser', 3], ['shooter', 4], ['splitter', 6], ['tank', 8]];
+      const shapes = ['chaser', 'shooter', 'splitter', 'tank'];
       for (let i = 0; i < 12; i++) {
-        const [type, n] = shapes[i % 4];
+        const type = shapes[i % 4];
         const x = (i * 211 + t * (20 + i * 3)) % (W + 100) - 50;
         const y = 90 + ((i * 137) % (H - 180));
         c.save(); c.translate(x, y);
-        c.globalAlpha = 0.35;
+        c.rotate(Math.sin(t * 2 + i) * 0.2);
+        c.globalAlpha = 0.22;
+        const R = 14 + (i % 3) * 5;
+        this.bearBody(R, C[type], t * 6 + i, { armor: type === 'tank' });
         this.glow(C[type], 12);
-        c.strokeStyle = C[type]; c.lineWidth = 2;
-        this.poly(n, 14 + (i % 3) * 5, t * (i % 2 ? 1 : -1) + i); c.stroke();
+        this.bear(R, C[type], { mouth: 0.5 + 0.5 * Math.sin(t * 10 + i), tuft: type === 'splitter', helmet: type === 'tank' });
         c.restore();
       }
       this.noGlow();
@@ -752,7 +946,7 @@ var NR = globalThis.NR = globalThis.NR || {};
       c.globalAlpha = flick;
       this.text('NEON RIFT', W / 2, 170, 96, C.player, 'center', 36, 900);
       c.globalAlpha = 1;
-      this.text('неоновый рогалик  ·  8 волн и босс  ·  около 5 минут', W / 2, 235, 18, 'rgba(220,200,255,0.8)', 'center', 0, 500);
+      this.text('бешеные плюющиеся медведи  ·  8 волн и король-гризли  ·  около 5 минут', W / 2, 235, 18, 'rgba(220,200,255,0.8)', 'center', 0, 500);
 
       const ctrl = [
         ['WASD / стрелки', 'движение'],
@@ -765,7 +959,7 @@ var NR = globalThis.NR = globalThis.NR || {};
         this.text(r[0], W / 2 - 16, 310 + i * 30, 17, C.player, 'right', 0, 700);
         this.text(r[1], W / 2 + 16, 310 + i * 30, 17, 'rgba(255,255,255,0.8)', 'left', 0, 500);
       });
-      this.text('Совет: щит танка спереди гасит урон — заходите сбоку.', W / 2, 480, 14, 'rgba(255,255,255,0.5)', 'center', 0, 500);
+      this.text('Совет: щит медведя в шлеме гасит урон спереди — заходите сбоку. Медведица распадается на медвежат.', W / 2, 480, 14, 'rgba(255,255,255,0.5)', 'center', 0, 500);
 
       const b = ui.best || {};
       if (b.bestTime) this.text(`Лучшая победа: ${fmtTime(b.bestTime)}  ·  побед: ${b.wins || 0}`, W / 2, 520, 15, '#ffff99', 'center', 0, 600);

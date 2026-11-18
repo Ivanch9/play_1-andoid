@@ -8,7 +8,7 @@ var NR = globalThis.NR = globalThis.NR || {};
   NR.COLORS = {
     player: '#33ffff', pbullet: '#99ffff', chaser: '#ff33cc', shooter: '#ffee33',
     splitter: '#ff8833', mini: '#ffbb66', tank: '#44ff99', boss: '#ff3355',
-    ebullet: '#ff5599', heart: '#55ff88', orb: '#77ffff', shield: '#bbffff',
+    ebullet: '#bbff33', heart: '#ff5577', orb: '#77ffff', shield: '#bbffff',
   };
 
   const TYPES = {

@@ -99,6 +99,26 @@ var NR = globalThis.NR = globalThis.NR || {};
       src.start(t, Math.random() * 0.5); src.stop(t + dur + 0.05);
     }
 
+    // Рык: пила с быстрым вибрато через узкий фильтр
+    growl(dur, vol, base) {
+      const ctx = this.ctx, t = ctx.currentTime;
+      const osc = ctx.createOscillator(), lfo = ctx.createOscillator();
+      const lg = ctx.createGain(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(base, t);
+      osc.frequency.linearRampToValueAtTime(base * 0.7, t + dur);
+      lfo.frequency.value = 26 + Math.random() * 8;
+      lg.gain.value = base * 0.35;
+      lfo.connect(lg); lg.connect(osc.frequency);
+      f.type = 'lowpass'; f.frequency.value = 650; f.Q.value = 5;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(f); f.connect(g); g.connect(this.sfx);
+      osc.start(t); lfo.start(t);
+      osc.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+    }
+
     arp(freqs, gap, o) {
       const t0 = this.ctx.currentTime;
       freqs.forEach((f, i) => this.tone(f, o.dur || 0.15, Object.assign({}, o, { t: t0 + i * gap })));
@@ -128,11 +148,13 @@ var NR = globalThis.NR = globalThis.NR || {};
         }
         case 'eshoot':
           if (this.throttle('eshoot', 80)) return;
-          this.tone(420, 0.08, { type: 'sawtooth', vol: 0.03, slide: 260, lp: 2000 });
+          // «Тьфу!»: влажный шлепок шума и короткий низкий тон
+          this.noise(0.1, { vol: 0.1, ftype: 'bandpass', freq: 1600, freqEnd: 450, q: 1.5 });
+          this.tone(170, 0.07, { type: 'square', vol: 0.03, slide: 80, lp: 900 });
           break;
         case 'spawn':
-          if (this.throttle('spawn', 120)) return;
-          this.tone(300, 0.12, { type: 'sine', vol: 0.03, slide: 700 });
+          if (this.throttle('spawn', 450)) return;
+          this.growl(0.35, 0.06, 95 + Math.random() * 40);
           break;
         case 'dash':
           this.noise(0.18, { vol: 0.12, ftype: 'bandpass', freq: 500, freqEnd: 3500, q: 2 });
@@ -170,16 +192,17 @@ var NR = globalThis.NR = globalThis.NR || {};
           this.tone(660, 0.25, { type: 'triangle', vol: 0.12, slide: 1320 });
           break;
         case 'boss':
-          this.tone(55, 2.2, { type: 'sawtooth', vol: 0.25, lp: 400, attack: 0.3 });
+          this.tone(55, 2.2, { type: 'sawtooth', vol: 0.2, lp: 400, attack: 0.3 });
+          this.growl(2.0, 0.35, 75);
           this.noise(2.0, { vol: 0.2, freq: 300, freqEnd: 60 });
           this.setIntensity(2);
           break;
         case 'bossphase':
-          this.tone(110, 0.7, { type: 'square', vol: 0.18, slide: 45, lp: 900 });
+          this.growl(1.0, 0.32, 85);
           this.noise(0.6, { vol: 0.25, freq: 900, freqEnd: 80 });
           break;
         case 'chargewarn':
-          this.tone(180, 0.85, { type: 'sawtooth', vol: 0.12, slide: 900, lp: 2500 });
+          this.growl(0.85, 0.22, 120);
           break;
         case 'slam':
           this.noise(0.6, { vol: 0.4, freq: 900, freqEnd: 50 });
