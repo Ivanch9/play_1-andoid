@@ -260,8 +260,12 @@ var NR = globalThis.NR = globalThis.NR || {};
       const p = this.player, s = this.stats, inp = this.input;
       let mx = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
       let my = (inp.down ? 1 : 0) - (inp.up ? 1 : 0);
-      const ml = Math.hypot(mx, my);
-      if (ml > 0) { mx /= ml; my /= ml; }
+      // Аналоговый ввод (сенсорный стик): ax/ay в круге радиуса 1
+      if (inp.ax || inp.ay) { mx = inp.ax; my = inp.ay; }
+      let ml = Math.hypot(mx, my);
+      if (ml > 1) { mx /= ml; my /= ml; ml = 1; }
+      // направление рывка — единичный вектор
+      const ux = ml > 0 ? mx / ml : 0, uy = ml > 0 ? my / ml : 0;
       p.aim = Math.atan2(inp.my - p.y, inp.mx - p.x);
       p.inv = Math.max(0, p.inv - dt);
       p.dashCd = Math.max(0, p.dashCd - dt);
@@ -269,8 +273,8 @@ var NR = globalThis.NR = globalThis.NR || {};
       if (this.dashQueued) {
         this.dashQueued = false;
         if (p.dashCd <= 0 && p.dashT <= 0) {
-          p.dx = ml > 0 ? mx : Math.cos(p.aim);
-          p.dy = ml > 0 ? my : Math.sin(p.aim);
+          p.dx = ml > 0 ? ux : Math.cos(p.aim);
+          p.dy = ml > 0 ? uy : Math.sin(p.aim);
           p.dashT = 0.17;
           p.dashCd = s.dashCd;
           this.emit('dash', p.x, p.y);

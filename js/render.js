@@ -266,6 +266,7 @@ var NR = globalThis.NR = globalThis.NR || {};
 
     text(str, x, y, size, color, align, glowPx, weight) {
       const c = this.ctx;
+      if (this.touch && size <= 18) size *= 1.15;
       c.font = `${weight || 700} ${size}px ${FONT}`;
       c.textAlign = align || 'center';
       c.textBaseline = 'middle';
@@ -277,6 +278,7 @@ var NR = globalThis.NR = globalThis.NR || {};
 
     wrap(str, maxW, size) {
       const c = this.ctx;
+      if (this.touch && size <= 18) size *= 1.15;
       c.font = `500 ${size}px ${FONT}`;
       const words = str.split(' '), lines = [];
       let line = '';
@@ -292,6 +294,7 @@ var NR = globalThis.NR = globalThis.NR || {};
     // ---------- Кадр ----------
     draw(game, ui) {
       const c = this.ctx, s = this.scale;
+      this.touch = !!ui.touch;
       c.setTransform(1, 0, 0, 1, 0, 0);
       c.globalAlpha = 1;
       c.globalCompositeOperation = 'source-over';
@@ -334,7 +337,8 @@ var NR = globalThis.NR = globalThis.NR || {};
         else if (game.state === 'win' && ui.endT > 0.3) this.drawEnd(game, ui, true);
         if (ui.paused) this.drawPause(ui);
       }
-      this.drawCursor(ui);
+      if (ui.touch) this.drawTouch(game, ui);
+      else this.drawCursor(ui);
     }
 
     drawWorld(g, ui) {
@@ -881,15 +885,111 @@ var NR = globalThis.NR = globalThis.NR || {};
         }
         c.restore();
       });
-      this.text('клик по карточке или клавиши 1 / 2 / 3', W / 2, H / 2 + 160, 14, 'rgba(255,255,255,0.5)', 'center', 0, 500);
+      this.text(ui.touch ? 'коснитесь карточки' : 'клик по карточке или клавиши 1 / 2 / 3', W / 2, H / 2 + 160, 14, 'rgba(255,255,255,0.5)', 'center', 0, 500);
     }
 
     drawPause(ui) {
       const c = this.ctx;
       c.fillStyle = 'rgba(5,2,15,0.7)';
       c.fillRect(0, 0, W, H);
+      if (ui.touch) {
+        this.text('ПАУЗА', W / 2, H / 2 - 90, 56, '#ffffff', 'center', 20, 800);
+        this.drawButtons(this.pauseButtons(), { sound: ui.muted ? 'ЗВУК: ВЫКЛ' : 'ЗВУК: ВКЛ' });
+        return;
+      }
       this.text('ПАУЗА', W / 2, H / 2 - 30, 56, '#ffffff', 'center', 20, 800);
       this.text('Esc — продолжить   ·   M — звук   ·   Q — в меню', W / 2, H / 2 + 30, 16, 'rgba(255,255,255,0.7)', 'center', 0, 500);
+    }
+
+    // ---------- Экранные кнопки (сенсорный режим), мировые координаты ----------
+    pauseButtons() {
+      const w = 300, h = 64, x = W / 2 - w / 2;
+      return [
+        { id: 'resume', label: 'ПРОДОЛЖИТЬ', x, y: H / 2 - 30, w, h, main: true },
+        { id: 'sound', label: 'ЗВУК', x, y: H / 2 + 50, w, h },
+        { id: 'menu', label: 'В МЕНЮ', x, y: H / 2 + 130, w, h },
+      ];
+    }
+
+    endButtons() {
+      const w = 240, h = 64, gap = 30, y = H / 2 + 175;
+      return [
+        { id: 'again', label: 'ЕЩЁ РАЗ', x: W / 2 - w - gap / 2, y, w, h, main: true },
+        { id: 'menu', label: 'В МЕНЮ', x: W / 2 + gap / 2, y, w, h },
+      ];
+    }
+
+    buttonAt(list, x, y) {
+      const pad = 10; // палец толще курсора
+      for (const b of list) {
+        if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return b.id;
+      }
+      return null;
+    }
+
+    drawButtons(list, labels) {
+      const c = this.ctx;
+      for (const b of list) {
+        const col = b.main ? C.player : '#a07aff';
+        c.fillStyle = b.main ? 'rgba(51,255,255,0.12)' : 'rgba(120,80,255,0.16)';
+        c.fillRect(b.x, b.y, b.w, b.h);
+        this.glow(col, b.main ? 18 : 10);
+        c.strokeStyle = col; c.lineWidth = 2;
+        c.strokeRect(b.x, b.y, b.w, b.h);
+        this.noGlow();
+        this.text((labels && labels[b.id]) || b.label, b.x + b.w / 2, b.y + b.h / 2 + 1, 24, '#ffffff', 'center', b.main ? 10 : 0, 800);
+      }
+    }
+
+    // Стики и кнопки поверх всего, в CSS-пикселях экрана
+    drawTouch(g, ui) {
+      const T = ui.touch, c = this.ctx, d = this.dpr, TAU2 = Math.PI * 2;
+      if (ui.scene !== 'game' || !g || ui.paused || g.state !== 'play') return;
+      c.setTransform(d, 0, 0, d, 0, 0);
+      c.globalAlpha = 1;
+      const ring = (x, y, r, col, a, lw) => {
+        c.globalAlpha = a; c.strokeStyle = col; c.lineWidth = lw || 2;
+        c.beginPath(); c.arc(x, y, r, 0, TAU2); c.stroke();
+      };
+      const disc = (x, y, r, col, a) => {
+        c.globalAlpha = a; c.fillStyle = col;
+        c.beginPath(); c.arc(x, y, r, 0, TAU2); c.fill();
+      };
+      const R0 = NR.Touch.STICK_R;
+      c.shadowColor = C.player; c.shadowBlur = 10 * d;
+      // Стики: активный — где палец, иначе бледная подсказка
+      for (const [s, home, col] of [[T.move, T.homeMove, C.player], [T.aim, T.homeAim, '#ff66cc']]) {
+        c.shadowColor = col;
+        if (s) {
+          const dx = s.x - s.bx, dy = s.y - s.by, l = Math.hypot(dx, dy), k = l > R0 ? R0 / l : 1;
+          ring(s.bx, s.by, R0, col, 0.55, 2);
+          disc(s.bx + dx * k, s.by + dy * k, 24, col, 0.45);
+        } else {
+          ring(home.x, home.y, R0, col, 0.16, 2);
+          disc(home.x, home.y, 20, col, 0.1);
+        }
+      }
+      // Рывок с индикатором перезарядки
+      const p = g.player, st = g.stats, db = T.dashBtn;
+      const ready = p.dashCd <= 0, k = 1 - p.dashCd / st.dashCd;
+      c.shadowColor = C.player;
+      disc(db.x, db.y, db.r, ready ? 'rgba(51,255,255,1)' : 'rgba(51,255,255,1)', T.dashFlash > 0 ? 0.45 : ready ? 0.2 : 0.06);
+      ring(db.x, db.y, db.r, C.player, ready ? 0.8 : 0.25, 2);
+      if (!ready) {
+        c.globalAlpha = 0.8; c.strokeStyle = C.player; c.lineWidth = 4;
+        c.beginPath(); c.arc(db.x, db.y, db.r - 5, -Math.PI / 2, -Math.PI / 2 + TAU2 * k); c.stroke();
+      }
+      c.shadowBlur = 0;
+      c.globalAlpha = ready ? 0.95 : 0.4;
+      c.fillStyle = '#ffffff';
+      c.font = `800 13px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText('РЫВОК', db.x, db.y);
+      // Пауза
+      const pb = T.pauseBtn;
+      ring(pb.x, pb.y, pb.r, '#ffffff', 0.45, 2);
+      c.globalAlpha = 0.6; c.fillStyle = '#ffffff';
+      c.fillRect(pb.x - 7, pb.y - 9, 5, 18); c.fillRect(pb.x + 2, pb.y - 9, 5, 18);
+      c.globalAlpha = 1;
     }
 
     drawEnd(g, ui, win) {
@@ -917,7 +1017,9 @@ var NR = globalThis.NR = globalThis.NR || {};
       else if (b.bestWave) rec = `Рекорд: волна ${b.bestWave > NR.WAVES.length ? 'с боссом' : b.bestWave}`;
       if (ui.newRecord) this.text('НОВЫЙ РЕКОРД!', W / 2, H / 2 + 120, 20, '#ffff66', 'center', 14, 800);
       if (rec) this.text(rec, W / 2, H / 2 + 150, 14, 'rgba(255,255,255,0.55)', 'center', 0, 500);
-      if (Math.floor(this.time * 2) % 2 === 0) this.text('Enter или клик — ещё раз   ·   Q — в меню', W / 2, H / 2 + 200, 17, '#ffffff', 'center', 8, 600);
+      if (ui.touch) {
+        if (ui.endT > 1.5) this.drawButtons(this.endButtons());
+      } else if (Math.floor(this.time * 2) % 2 === 0) this.text('Enter или клик — ещё раз   ·   Q — в меню', W / 2, H / 2 + 200, 17, '#ffffff', 'center', 8, 600);
       c.globalAlpha = 1;
     }
 
@@ -948,7 +1050,12 @@ var NR = globalThis.NR = globalThis.NR || {};
       c.globalAlpha = 1;
       this.text('бешеные плюющиеся медведи  ·  8 волн и король-гризли  ·  около 5 минут', W / 2, 235, 18, 'rgba(220,200,255,0.8)', 'center', 0, 500);
 
-      const ctrl = [
+      const ctrl = ui.touch ? [
+        ['Левый палец', 'движение (стик появляется под пальцем)'],
+        ['Правый палец', 'прицел (огонь автоматический)'],
+        ['РЫВОК', 'неуязвимость на миг'],
+        ['II', 'пауза, звук, выход в меню'],
+      ] : [
         ['WASD / стрелки', 'движение'],
         ['Мышь', 'прицел (огонь автоматический)'],
         ['Пробел / Shift / ПКМ', 'рывок — неуязвимость на миг'],
@@ -967,7 +1074,7 @@ var NR = globalThis.NR = globalThis.NR || {};
 
       const pulse = 0.6 + Math.sin(t * 4) * 0.4;
       c.globalAlpha = pulse;
-      this.text('КЛИК ИЛИ ENTER — НАЧАТЬ', W / 2, 590, 24, '#ffffff', 'center', 16, 800);
+      this.text(ui.touch ? 'КОСНИТЕСЬ, ЧТОБЫ НАЧАТЬ' : 'КЛИК ИЛИ ENTER — НАЧАТЬ', W / 2, 590, 24, '#ffffff', 'center', 16, 800);
       c.globalAlpha = 1;
     }
 

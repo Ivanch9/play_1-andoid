@@ -18,6 +18,50 @@
   const keys = new Set();
   let best = loadBest();
 
+  // ---------- Сенсорное управление ----------
+  const T = new NR.Touch(canvas, {
+    playing: () => scene === 'game' && !paused && game && game.state === 'play',
+    pause: () => setPaused(true),
+    dash: () => { if (game) game.dashQueued = true; },
+    tap: (x, y) => { A.init(); tapAt(R.toWorld(x, y)); },
+  });
+
+  // Тап вне боя: меню, пауза, выбор улучшения, финал
+  function tapAt(w) {
+    if (scene === 'menu') { start(); return; }
+    if (!game) return;
+    if (paused) {
+      const b = R.buttonAt(R.pauseButtons(), w.x, w.y);
+      if (b === 'resume') setPaused(false);
+      else if (b === 'sound') A.toggleMute();
+      else if (b === 'menu') toMenu();
+      return;
+    }
+    if (ended()) {
+      if (endT <= 1.5) return;
+      const b = R.buttonAt(R.endButtons(), w.x, w.y);
+      if (b === 'again') start();
+      else if (b === 'menu') toMenu();
+      return;
+    }
+    if (game.state === 'upgrade') {
+      const i = R.cardAt(w.x, w.y);
+      if (i >= 0) choose(i);
+    }
+  }
+
+  function buzz(ms) {
+    try { if (T.enabled && navigator.vibrate) navigator.vibrate(ms); } catch (e) { /* нет вибро */ }
+  }
+
+  // Кнопка «Назад» Android (вызывается из MainActivity). false — выйти из приложения.
+  NR.onBack = function () {
+    if (scene === 'menu') return false;
+    if (ended()) { toMenu(); return true; }
+    setPaused(!paused);
+    return true;
+  };
+
   function loadBest() {
     try { return JSON.parse(localStorage.getItem('neonrift.best')) || {}; } catch (e) { return {}; }
   }
@@ -34,6 +78,7 @@
     endT = 0;
     acc = 0;
     newRecord = false;
+    T.release();
     R.reset();
   }
 
@@ -50,6 +95,7 @@
     if (!game || game.state === 'dead' || game.state === 'win') return;
     paused = p;
     A.setPaused(p);
+    T.release();
   }
 
   function choose(i) {
@@ -106,6 +152,8 @@
   addEventListener('keyup', e => keys.delete(e.code));
 
   function updateMouse(e) {
+    if (T.recent()) return;
+    T.enabled = false; // настоящая мышь — возвращаем прицел-курсор
     screenMouse = { x: e.clientX, y: e.clientY };
     mouse = R.toWorld(e.clientX, e.clientY);
     hover = game && game.state === 'upgrade' ? R.cardAt(mouse.x, mouse.y) : -1;
@@ -113,6 +161,7 @@
   canvas.addEventListener('mousemove', updateMouse);
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('mousedown', e => {
+    if (T.recent()) return;
     updateMouse(e);
     A.init();
     if (scene === 'menu') { if (e.button === 0) start(); return; }
@@ -122,6 +171,16 @@
     if (e.button === 2) game.dashQueued = true;
   });
 
+  // Свернули приложение / вкладку — пауза и тишина
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      keys.clear();
+      if (scene === 'game' && game && game.state === 'play') setPaused(true);
+      A.setPaused(true);
+    } else if (!paused) {
+      A.setPaused(false);
+    }
+  });
   addEventListener('blur', () => {
     keys.clear();
     if (scene === 'game' && game && game.state === 'play') setPaused(true);
@@ -137,7 +196,15 @@
     i.down = keys.has('KeyS') || keys.has('ArrowDown');
     i.left = keys.has('KeyA') || keys.has('ArrowLeft');
     i.right = keys.has('KeyD') || keys.has('ArrowRight');
-    if (mouse) { i.mx = mouse.x; i.my = mouse.y; }
+    if (T.enabled) {
+      const v = T.moveVec();
+      i.ax = v.x; i.ay = v.y;
+      const d = T.aimDir;
+      if (d) { i.mx = game.player.x + d.x * 200; i.my = game.player.y + d.y * 200; }
+    } else {
+      i.ax = i.ay = 0;
+      if (mouse) { i.mx = mouse.x; i.my = mouse.y; }
+    }
   }
 
   // ---------- Цикл ----------
@@ -158,13 +225,17 @@
         R.consume(ev);
         A.play(ev);
         if (ev.t === 'death' || ev.t === 'win') recordResult();
+        if (ev.t === 'hurt') buzz(40);
+        else if (ev.t === 'death') buzz([60, 40, 120]);
+        else if (ev.t === 'shieldbreak') buzz(20);
       }
       game.events.length = 0;
       if (ended()) endT += dt;
     }
     if (!paused) R.update(dt);
+    T.update(dt);
 
-    R.draw(game, { scene, paused, hover, best, muted: A.muted, endT, newRecord, mouse });
+    R.draw(game, { scene, paused, hover, best, muted: A.muted, endT, newRecord, mouse, touch: T.enabled ? T : null });
     requestAnimationFrame(frame);
   }
 

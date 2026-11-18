@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Неоновая морда бешеного медведя. Холст 108x108, безопасная зона — центральные 66. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- уши -->
+    <path android:fillColor="#07040F" android:strokeColor="#FF66CC" android:strokeWidth="3"
+        android:pathData="M30,40 a9,9 0 1,0 18,0 a9,9 0 1,0 -18,0 M60,40 a9,9 0 1,0 18,0 a9,9 0 1,0 -18,0" />
+    <!-- голова -->
+    <path android:fillColor="#07040F" android:strokeColor="#33FFFF" android:strokeWidth="3.5"
+        android:pathData="M32,58 a22,21 0 1,0 44,0 a22,21 0 1,0 -44,0" />
+    <!-- злые брови -->
+    <path android:strokeColor="#33FFFF" android:strokeWidth="3" android:strokeLineCap="round"
+        android:pathData="M40,48 L49,52 M68,48 L59,52" />
+    <!-- красные глаза -->
+    <path android:fillColor="#FF3366"
+        android:pathData="M43,56 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0 M59,56 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <!-- пасть с клыками -->
+    <path android:fillColor="#FF3366"
+        android:pathData="M45,65 Q54,62 63,65 Q61,76 54,77 Q47,76 45,65 Z" />
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M47,65.5 L49.5,70 L51,64.5 Z M61,65.5 L58.5,70 L57,64.5 Z" />
+</vector>
