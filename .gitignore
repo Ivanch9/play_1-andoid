@@ -7,6 +7,9 @@
 credentials.json
 secrets.*
 config.local.*
+*.jks
+*.keystore
+*.pass
 
 # Зависимости
 node_modules/
